@@ -1,0 +1,38 @@
+let auth=null,currentUser=null,currentTab="cultures",allData={},editingId=null;
+const $=s=>document.querySelector(s);
+const SHEETS={cultures:"CULTURES",media:"MEDIA",articles:"ARTICLES",provinces:"PROVINCES",categories:"CATEGORIES",settings:"SETTINGS"};
+const LABELS={cultures:"Budaya",media:"Media berbasis Link",articles:"Artikel",provinces:"Provinsi",categories:"Kategori",settings:"Pengaturan"};
+const FIELDS={
+ cultures:[["name","Nama budaya"],["province_id","Provinsi (cari nama atau ID)","lookup","PROVINCES"],["category_id","Kategori (cari nama atau ID)","lookup","CATEGORIES"],["slug","Slug"],["short_description","Deskripsi singkat"],["content","Isi/deskripsi","textarea"],["location","Lokasi"],["latitude","Latitude"],["longitude","Longitude"],["cover_url","URL foto sampul"],["status","Status","select","ACTIVE,INACTIVE"],["is_published","Publikasikan","select","TRUE,FALSE"]],
+ media:[["culture_id","Budaya (opsional; cari nama atau ID)","lookup","CULTURES"],["media_type","Jenis media","select","IMAGE,VIDEO,AUDIO,EXTERNAL"],["title","Judul"],["description","Deskripsi","textarea"],["media_url","URL / Link media"],["thumbnail_url","URL thumbnail (opsional)"],["source","Sumber"],["status","Status","select","ACTIVE,INACTIVE"]],
+ articles:[["province_id","Provinsi (cari nama atau ID)","lookup","PROVINCES"],["category_id","Kategori (cari nama atau ID)","lookup","CATEGORIES"],["title","Judul"],["slug","Slug"],["excerpt","Ringkasan","textarea"],["cover_url","URL foto sampul"],["content","Isi artikel","textarea"],["author","Penulis"],["status","Status","select","DRAFT,PUBLISHED"]],
+ provinces:[["name","Nama provinsi"],["slug","Slug"],["description","Deskripsi","textarea"],["image_url","URL gambar"],["island_group","Kelompok pulau"],["status","Status","select","ACTIVE,INACTIVE"]],
+ categories:[["name","Nama kategori"],["slug","Slug"],["description","Deskripsi","textarea"],["icon","Ikon"],["status","Status","select","ACTIVE,INACTIVE"]],
+ settings:[["setting_key","Kunci pengaturan"],["setting_value","Nilai pengaturan","textarea"],["description","Deskripsi"]]
+};
+document.addEventListener("DOMContentLoaded",async()=>{
+ if(!window.firebase)return;
+ firebase.initializeApp(APP_CONFIG.FIREBASE);auth=firebase.auth();
+ if($("#loginForm")){$("#loginForm").onsubmit=login;return}
+ if($("#recordList")){auth.onAuthStateChanged(async u=>{if(!u){location.href="login.html";return}currentUser=u;try{const token=await u.getIdToken();const me=await Api.post({action:"adminMe"},token);$("#adminIdentity").textContent=me.admin?.username||me.admin?.name||u.email;await loadData()}catch(e){$("#adminMessage").textContent=e.message;await auth.signOut();location.href="login.html"}});
+ $("#logoutBtn").onclick=()=>auth.signOut().then(()=>location.href="login.html");
+ document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+ $("#addBtn").onclick=()=>showForm();$("#cancelBtn").onclick=hideForm;$("#recordForm").onsubmit=saveForm;
+ }
+});
+async function login(e){e.preventDefault();const msg=$("#loginMessage");msg.textContent="Memeriksa akun...";try{const cred=await auth.signInWithEmailAndPassword($("#email").value,$("#password").value);const token=await cred.user.getIdToken();await Api.post({action:"adminMe"},token);location.href="admin.html"}catch(err){msg.textContent=err.message}}
+async function token(){return currentUser.getIdToken()}
+async function loadData(){const r=await Api.post({action:"adminData"},await token());allData=r.data||{};renderList()}
+function switchTab(tab){currentTab=tab;editingId=null;document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));$("#sectionTitle").textContent="Kelola "+LABELS[tab];$("#recordForm").hidden=true;renderList()}
+function rows(){return allData[SHEETS[currentTab]]||[]}
+function idField(){return ({cultures:"culture_id",media:"media_id",articles:"article_id",provinces:"province_id",categories:"category_id",settings:"setting_id"})[currentTab]}
+const LOOKUP_ID_FIELDS={PROVINCES:"province_id",CATEGORIES:"category_id",CULTURES:"culture_id"};
+function lookupLabel(sheet,record){const id=String(record[LOOKUP_ID_FIELDS[sheet]]??"");return `${record.name||record.title||"Tanpa nama"} [${id}]`}
+function lookupValue(sheet,id){const record=(allData[sheet]||[]).find(item=>String(item[LOOKUP_ID_FIELDS[sheet]])===String(id));return record?lookupLabel(sheet,record):String(id||"")}
+function resolveLookup(sheet,value,existingId,label){const text=String(value??"").trim();if(!text)return "";const idField=LOOKUP_ID_FIELDS[sheet],record=(allData[sheet]||[]).find(item=>lookupLabel(sheet,item)===text||String(item[idField])===text);if(record)return String(record[idField]);if(String(existingId??"")===text)return text;throw new Error(`Pilih ${label} dari daftar atau masukkan ID yang tersedia.`)}
+function renderList(){const data=rows();$("#recordList").innerHTML=data.length?data.map(r=>`<div class="record"><div><b>${AppUtils.esc(r.name||r.title||r.setting_key||r.media_type||"Tanpa judul")}</b><small>${AppUtils.esc(r[idField()]||"")} · ${AppUtils.esc(r.status||"")}</small></div><div class="record-actions"><button onclick="editRecord('${AppUtils.esc(r[idField()])}')">Ubah</button><button onclick="deleteRecord('${AppUtils.esc(r[idField()])}')">Hapus</button></div></div>`).join(""):'<div class="record">Belum ada data.</div>'}
+function showForm(record={}){editingId=record[idField()]||null;$("#formTitle").textContent=editingId?"Ubah Data":"Tambah Data";$("#formFields").innerHTML=FIELDS[currentTab].map(([key,label,type,opts])=>{const val=record[key]??"";let control;if(type==="textarea")control=`<textarea name="${key}">${AppUtils.esc(val)}</textarea>`;else if(type==="select")control=`<select name="${key}">${opts.split(",").map(x=>`<option ${String(val).toUpperCase()===x?"selected":""}>${x}</option>`).join("")}</select>`;else if(type==="lookup"){const listId=`lookup-${currentTab}-${key}`,options=(allData[opts]||[]).map(item=>`<option value="${AppUtils.esc(lookupLabel(opts,item))}"></option>`).join("");control=`<input name="${key}" list="${listId}" value="${AppUtils.esc(lookupValue(opts,val))}" placeholder="Cari nama atau ID" autocomplete="off"><datalist id="${listId}">${options}</datalist>`}else control=`<input name="${key}" value="${AppUtils.esc(val)}" ${key.endsWith("_url")||key==="media_url"?"type=url":"type=text"}>`;return `<div class="field ${type==="textarea"?"full":""}"><label>${label}</label>${control}</div>`}).join("");$("#recordForm").hidden=false;$("#recordForm").scrollIntoView({behavior:"smooth"})}
+window.editRecord=id=>{const r=rows().find(x=>String(x[idField()])===String(id));if(r)showForm(r)};
+window.deleteRecord=async id=>{if(!confirm("Hapus data ini?"))return;try{await Api.post({action:"delete",sheet:SHEETS[currentTab],idField:idField(),id},await token());await loadData()}catch(e){$("#adminMessage").textContent=e.message}};
+async function saveForm(e){e.preventDefault();try{const data=Object.fromEntries(new FormData(e.target).entries()),original=editingId?rows().find(record=>String(record[idField()])===String(editingId))||{}:{};FIELDS[currentTab].forEach(([key,label,type,sheet])=>{if(type==="lookup")data[key]=resolveLookup(sheet,data[key],original[key],label)});if(data.name&&!data.slug)data.slug=AppUtils.slug(data.name);if(data.title&&!data.slug)data.slug=AppUtils.slug(data.title);if(currentTab==="cultures")data.is_published=data.is_published==="TRUE";await Api.post({action:"save",sheet:SHEETS[currentTab],idField:idField(),id:editingId,data},await token());hideForm();await loadData();$("#adminMessage").textContent="Data berhasil disimpan."}catch(err){$("#adminMessage").textContent=err.message}}
+function hideForm(){$("#recordForm").hidden=true}
